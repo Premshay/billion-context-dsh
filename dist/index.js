@@ -3404,7 +3404,7 @@ function sessionEventsOf(session) {
 function eventAtOf(session, seq) {
   const eventAt = session.eventAt;
   if (typeof eventAt === "function") return eventAt.call(session, seq);
-  return session.events[seq];
+  return sessionEventsOf(session)?.[seq];
 }
 
 // src/messages.ts
@@ -4938,7 +4938,7 @@ function replaceTierTrigger(text, nudge, session, prompts) {
   const next = rest.match(/\n\nHOW TO COMPRESS/);
   const end = next !== null ? start + 2 + next.index : text.length;
   const targets = nudge.tierTargetBlocks;
-  const summarySeqs = targets.map((block) => summarySeqOfKernelBlock(session, block.blockId)).filter((seq) => seq !== null).sort((a, b) => a - b);
+  const summarySeqs = targets.map((block) => summarySeqOfKernelBlock(session, block.blockId)).filter((seq) => seq != null).sort((a, b) => a - b);
   const pending = nudge.tier === 2 ? nudge.breakdown?.pendingT2 : nudge.breakdown?.pendingT3;
   const tokens = typeof pending === "number" ? pending : 0;
   const tierValue = nudge.tier === null ? 2 : nudge.tier;
@@ -4986,7 +4986,7 @@ function renderNudgeFromTemplates(nudge, emergency, session, kernelView, prompts
   if (prompts.nudge.guidance !== "") parts.push("", prompts.nudge.guidance);
   if ((nudge.tier === 2 || nudge.tier === 3) && (nudge.tierTargetBlocks?.length ?? 0) > 0) {
     const targets = nudge.tierTargetBlocks;
-    const summarySeqs = targets.map((block) => summarySeqOfKernelBlock(session, block.blockId)).filter((seq) => seq !== null).sort((a, b) => a - b);
+    const summarySeqs = targets.map((block) => summarySeqOfKernelBlock(session, block.blockId)).filter((seq) => seq != null).sort((a, b) => a - b);
     const pending = nudge.tier === 2 ? nudge.breakdown?.pendingT2 : nudge.breakdown?.pendingT3;
     const tokens = typeof pending === "number" ? pending : 0;
     const tierLine = renderTemplate(prompts.nudge.tier, {
