@@ -399,6 +399,13 @@ export interface CompactionTransactionInput {
   readonly effectiveMessageIds?: readonly string[]
   /** B3：压缩前已绿的验收读数（结构化，压缩后仍可读）。 */
   readonly verifiedReadings?: readonly string[]
+  /**
+   * False skips the model-written-source framing (`prefixSummaryBlocks`) — the
+   * engine-written emergency overflow marker is NOT a model-written summary,
+   * so stamping it with the "not user words; re-verify" prefix would mislabel
+   * its provenance. Default true (every model-written compress keeps framing).
+   */
+  readonly framed?: boolean
 }
 
 type CompactionSummaryData = SessionEventMap['compaction/summary']
@@ -495,8 +502,10 @@ export function runCompactionTransaction(
     // B1: frame the model-written summary ONCE at creation and write the SAME framed
     // blocks to both the durable compaction/summary event and the checkpoint node
     // below — log readers (search, acp_status, ledger) must never see different text
-    // than what the model sees in context (review item: prefix/raw mismatch).
-    const framedSummary = prefixSummaryBlocks(input.summary)
+    // than what the model sees in context (review item: prefix/raw mismatch). The
+    // engine-written emergency overflow marker opts out (`framed: false`): it is
+    // not model-written, so the provenance prefix would mislabel it.
+    const framedSummary = input.framed === false ? [...input.summary] : prefixSummaryBlocks(input.summary)
     seqs.push(session.append('compaction/summary', {
       compactionId,
       summary: framedSummary,
