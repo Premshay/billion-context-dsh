@@ -82,14 +82,15 @@ export interface ResolvedSurfaceRange {
 }
 /**
  * Validate one inclusive surface span and adjust its edges to a
- * tool-pairing-balanced range whose boundaries carry a bare-seq ref. Reversed
- * ranges throw. An edge that sits inside a tool-call/result pair — or on a
- * multi-tool-call assistant message that has no bare-seq ref — is first nudged
- * inward to the nearest clean cut; if that collapses the range (e.g. the model
- * asked for a SINGLE tool result, which can never be balanced alone), the
- * range EXPANDS outward to the enclosing clean pair instead — a lone tool
- * message is almost always a "consumed output" the model genuinely wants to
- * compress. The returned range is what a caller should actually shadow.
+ * tool-pairing-balanced range whose boundaries anchor (bare-`${seq}` ref,
+ * multi-call sub-id, or empty-result fallback — see anchorsRangeEdge,
+ * issue #155). Reversed ranges throw. An edge that sits inside a
+ * tool-call/result pair is first nudged inward to the nearest clean cut; if
+ * that collapses the range (e.g. the model asked for a SINGLE tool result,
+ * which can never be balanced alone), the range EXPANDS outward to the
+ * enclosing clean pair instead — a lone tool message is almost always a
+ * "consumed output" the model genuinely wants to compress. The returned range
+ * is what a caller should actually shadow.
  *
  * Missing edges are NOT an immediate error: the seqs were probably shadowed by
  * an earlier compression (stale nudge table / old compress result). The span

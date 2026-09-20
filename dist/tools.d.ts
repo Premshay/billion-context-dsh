@@ -142,6 +142,28 @@ export declare const compressParameters: {
 export declare function guardedRowsInSpan(guarded: ReadonlySet<number>, shadowed: readonly number[]): number[];
 export declare function protectedRowRejectionNote(start: number, end: number, hits: readonly number[], shadowed: readonly number[]): string;
 /**
+ * Kernel ref for one RESOLVED range edge's surface node (issue #155).
+ * Resolved edges are tool-pairing-balanced and anchorable, but NO LONGER
+ * guaranteed to carry a bare-`${seq}` ref: a multi-tool-call assistant
+ * projects to `${seq}#${callId}` sub-ids, and an empty tool result projects
+ * to nothing. Three tiers, in order:
+ *
+ *  1. the bare-seq id (user turns, single-call assistants, text-bearing results);
+ *  2. the node's sub-ids in projection (= content) order — FIRST for a start
+ *     edge (the kernel must consume the whole node from its first sub-message),
+ *     LAST for an end edge (unreachable in practice: a node with open calls
+ *     makes every cut after it unbalanced, so it can never be a resolved end
+ *     edge);
+ *  3. the nearest message-bearing LIVE node between this edge and the opposite
+ *     edge (inclusive), walked along the SURFACE — never raw-id space, where
+ *     shadowed nodes keep their refs and would anchor onto already-compressed
+ *     messages. Walking inward only also guarantees the returned ref names a
+ *     message the transaction actually shadows; a span whose interior carries
+ *     no message at all (two adjacent empty results) yields undefined and the
+ *     caller raises the existing "no assigned ref" error.
+ */
+export declare function edgeRefForSeq(session: Session, byRaw: Readonly<Record<string, string>>, seq: number, role: 'start' | 'end', oppositeSeq: number): string | undefined;
+/**
  * Build the unified SearchDoc[] from the log: one block doc per ledger entry
  * (ref = compactionId, so `decompress({ blockId })` closes the loop) plus one
  * message doc per shadowed ORIGINAL (expanded through distilled parents; each

@@ -3832,21 +3832,19 @@ function assertNoActiveCompaction(events) {
     console.warn("billion-context-dsh: clearing stale compaction flag \u2014 found a compaction/start with no matching compaction/end");
   }
 }
-function hasPlainRef(session, seq) {
+function anchorsRangeEdge(session, seq) {
   const event = eventAtOf(session, seq);
   if (event === void 0) return false;
+  if (isSystemNode(event)) return false;
   switch (event.type) {
     case "user/message":
-    case "tool/result":
       return extractEventText(event).trim().length > 0;
     case "assistant/message": {
       const content = event.data.message?.content;
-      const calls = Array.isArray(content) ? content.filter(
-        (block) => block !== null && typeof block === "object" && block.type === "tool-call"
-      ) : [];
-      if (calls.length > 1) return false;
-      return calls.length === 1 || extractEventText(event).trim().length > 0;
+      return toolCallsOf(content).length > 0 || extractText(content).trim().length > 0;
     }
+    case "tool/result":
+      return true;
     default:
       return false;
   }
@@ -3917,12 +3915,18 @@ function resolveSurfaceRange(session, start, end) {
     throw new Error(`billion-context-dsh: reversed range ${start}..${end}`);
   }
   const cleanBefore = (index) => {
-    const event = eventAtOf(session, nodes[index]);
-    return event !== void 0 && !isSystemNode(event) && toolPairingBalancedBefore(session, nodes[index]) && hasPlainRef(session, nodes[index]);
+    const node = nodes[index];
+    const event = eventAtOf(session, node);
+    if (event === void 0 || isSystemNode(event)) return false;
+    if (!toolPairingBalancedBefore(session, node)) return false;
+    return anchorsRangeEdge(session, node);
   };
   const cleanAfter = (index) => {
-    const event = eventAtOf(session, nodes[index]);
-    return event !== void 0 && !isSystemNode(event) && toolPairingBalancedAfter(session, nodes[index]) && hasPlainRef(session, nodes[index]);
+    const node = nodes[index];
+    const event = eventAtOf(session, node);
+    if (event === void 0 || isSystemNode(event)) return false;
+    if (!toolPairingBalancedAfter(session, node)) return false;
+    return anchorsRangeEdge(session, node);
   };
   let startIdx = requestedStartIdx;
   let endIdx = requestedEndIdx;
@@ -4285,7 +4289,7 @@ function guardedSurfaceSeqsOf(session) {
 function seqOfKernelRef(refs, ref) {
   const id = refs.byRef[ref];
   if (id === void 0) return null;
-  const seq = Number(id);
+  const seq = Number(String(id).split("#")[0]);
   return Number.isInteger(seq) ? seq : null;
 }
 function protectedSurfaceSeqs(session, preserve) {
@@ -5241,6 +5245,39 @@ function protectedRowRejectionNote(start, end, hits, shadowed) {
   const recovery = slices.length === 0 ? "no part of this span is compressible while those rows are current \u2014 pick an OLDER span instead (acp_status lists the live ranges)" : `the compressible part of this span is seq ${slices.join(" and ")} \u2014 submit them as separate content entries (or two compress calls), each with its own summary`;
   return `  seqs ${start}..${end} rejected \u2014 the span covers ${hits.length} CURRENT injected instruction row(s) (seq ${preview}${more}); the host re-injects the newest AGENTS.md copy the moment it leaves the surface, so compressing it reclaims nothing \u2014 ${recovery} (older/stale copies of the same file are fine to compress)`;
 }
+function edgeRefForSeq(session, byRaw, seq, role, oppositeSeq) {
+  const nodes = session.surface.nodes;
+  let index = -1;
+  let oppositeIndex = -1;
+  for (let i = 0; i < nodes.length; i += 1) {
+    if (nodes[i] === seq) index = i;
+    if (nodes[i] === oppositeSeq) oppositeIndex = i;
+  }
+  if (index < 0 || oppositeIndex < 0) return void 0;
+  const direct = anchorRefForNode(session, byRaw, seq, role);
+  if (direct !== void 0) return direct;
+  const step = role === "start" ? 1 : -1;
+  for (let i = index + step; i !== oppositeIndex + step; i += step) {
+    const ref = anchorRefForNode(session, byRaw, nodes[i], role);
+    if (ref !== void 0) return ref;
+  }
+  return void 0;
+}
+function anchorRefForNode(session, byRaw, seq, role) {
+  const direct = byRaw[String(seq)];
+  if (direct !== void 0) return direct;
+  const event = eventAtOf(session, seq);
+  if (event?.type !== "assistant/message") return void 0;
+  const content = event.data.message?.content;
+  const ids = toolCallsOf(content).map((call) => call.id ?? "");
+  if (ids.length < 2) return void 0;
+  const ordered = role === "start" ? ids : [...ids].reverse();
+  for (const id of ordered) {
+    const ref = byRaw[`${seq}#${id}`];
+    if (ref !== void 0) return ref;
+  }
+  return void 0;
+}
 async function handleCompress(env, args, exec) {
   const agent = requireAgent(exec);
   const session = agent.session;
@@ -5292,8 +5329,8 @@ async function handleCompress(env, args, exec) {
     }
     const startBlockRef = blockRefForSummarySeq(session, resolved.start);
     const endBlockRef = blockRefForSummarySeq(session, resolved.end);
-    const startRef = startBlockRef ?? byRaw[String(resolved.start)];
-    const endRef = endBlockRef ?? byRaw[String(resolved.end)];
+    const startRef = startBlockRef ?? edgeRefForSeq(session, byRaw, resolved.start, "start", resolved.end);
+    const endRef = endBlockRef ?? edgeRefForSeq(session, byRaw, resolved.end, "end", resolved.start);
     if (startRef === void 0 || endRef === void 0) {
       throw new Error(
         `billion-context-dsh: seq ${resolved.start}..${resolved.end} has no assigned ref \u2014 the range must be on the current surface (run acp_status for the live seq list)`
