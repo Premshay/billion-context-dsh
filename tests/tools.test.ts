@@ -5,12 +5,13 @@ import { createCore, type CompressionCore } from 'acp-kernel'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
 import { AcpStateStore } from '../src/state.ts'
-import { makeTools, type ToolEnvironment } from '../src/tools.ts'
+import { edgeRefForSeq, makeTools, type ToolEnvironment } from '../src/tools.ts'
 import { blockRegistry, rebuildBlockLedger, sliceDecompressPage, DEFAULT_DECOMPRESS_PAGE, DEFAULT_DECOMPRESS_PAGE_CHARS } from '../src/region.ts'
 import { rangeTable } from '../src/nudge.ts'
 import { SUMMARY_FRAME_PREFIX } from '../src/messages.ts'
-import { appendTurn, appendToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
+import { appendTurn, appendToolResult, appendEmptyToolResult, appendToolCall, appendMultiToolCall, appendUser, appendAssistant, buildTextSession, buildShortTextSession, longText, wholeSurfaceRangeView } from './helpers.ts'
 
 function makeEnv(limit = 128000): ToolEnvironment {
   return {
@@ -962,14 +963,16 @@ function buildMultiCallSession(): Session {
   return session
 }
 
-test('M3: compress expands a lone multi-tool-call boundary to the clean pair', async () => {
+test('M3: compress maps a lone multi-tool-call boundary onto its own round (issue #155)', async () => {
   const env = makeEnv()
   const session = buildMultiCallSession()
   const compress = toolOf(env, 'compress')
   // seq 2 is a multi-tool-call assistant message: it has NO bare '2' ref (the
-  // projection keys are '2#c1' / '2#c2'), so a naive byRaw lookup fails. A lone
-  // request on it expands outward to the smallest clean enclosing pair — the
-  // whole call/result round (1..4) — whose edges are plain-ref messages.
+  // projection keys are '2#c1' / '2#c2'). Pre-#155 a lone request on it
+  // expanded outward to the whole round INCLUDING the previous user turn
+  // (1..4); now node 2 anchors its own call/result round (2..4), and the start
+  // edge's kernel ref is its FIRST sub-id — so the kernel consumes exactly the
+  // messages the durable transaction shadows.
   const result = await compress.execute({
     content: [{
       startSeq: 2,
@@ -981,7 +984,100 @@ test('M3: compress expands a lone multi-tool-call boundary to the clean pair', a
   assert.match((result as { text: string }).text, /Compressed 1 block/)
   const ledger = rebuildBlockLedger(session.snapshotEvents())
   assert.equal(ledger.length, 1)
-  assert.deepEqual(ledger[0]!.shadowedSeqs, [1, 2, 3, 4])
+  assert.deepEqual(ledger[0]!.shadowedSeqs, [2, 3, 4])
+})
+
+test('M3: edgeRefForSeq falls back through sub-ids and the live surface (issue #155)', () => {
+  // Fixture A: [1 user, 2 multi-call(a,b), 3 EMPTY result(a), 4 text result(b)]
+  const sessionA = Session.create('edgerefs-a')
+  appendTurn(sessionA, 1)
+  appendUser(sessionA, longText('q', 0))                      // seq 1
+  appendMultiToolCall(sessionA, 'plan', ['a', 'b'], 1, 1)     // seq 2
+  appendEmptyToolResult(sessionA, 'a', 1, 1)                  // seq 3 (no ref of any kind)
+  appendToolResult(sessionA, longText('res', 0), 'b', 1, 1)   // seq 4
+  const byRawA: Record<string, string> = {
+    '1': 'm00001',
+    '2#a': 'm00002',
+    '2#b': 'm00003',
+    '4': 'm00004',
+  }
+  // Tier 1: a bare-ref node is returned as-is.
+  assert.equal(edgeRefForSeq(sessionA, byRawA, 1, 'start', 4), 'm00001')
+  // Tier 2: a multi-call node anchors via ITS OWN sub-ids, ordered by the
+  // message content — first sub-id for a start edge, last for an end edge.
+  assert.equal(edgeRefForSeq(sessionA, byRawA, 2, 'start', 4), 'm00002')
+  assert.equal(edgeRefForSeq(sessionA, byRawA, 2, 'end', 1), 'm00003')
+  // Tier 3: a ref-less node (empty result) borrows the nearest ref-bearing
+  // LIVE surface node toward the opposite edge — forward for a start edge...
+  assert.equal(edgeRefForSeq(sessionA, byRawA, 3, 'start', 4), 'm00004')
+  // ...backward for an end edge (landing on the multi-call's last sub-id).
+  assert.equal(edgeRefForSeq(sessionA, byRawA, 3, 'end', 2), 'm00003')
+
+  // Fixture B: two ADJACENT empty results — a span with no messages at all.
+  const sessionB = Session.create('edgerefs-b')
+  appendTurn(sessionB, 1)
+  appendUser(sessionB, longText('q', 0))                      // seq 1
+  appendMultiToolCall(sessionB, 'plan', ['a', 'b'], 1, 1)     // seq 2
+  appendEmptyToolResult(sessionB, 'a', 1, 1)                  // seq 3
+  appendEmptyToolResult(sessionB, 'b', 1, 1)                  // seq 4
+  const byRawB: Record<string, string> = {
+    '1': 'm00001',
+    '2#a': 'm00002',
+    '2#b': 'm00003',
+  }
+  // The walk is clamped to the span; when no node in it carries a ref the
+  // caller keeps its existing "no assigned ref" error instead of guessing.
+  assert.equal(edgeRefForSeq(sessionB, byRawB, 3, 'start', 4), undefined)
+  assert.equal(edgeRefForSeq(sessionB, byRawB, 4, 'end', 3), undefined)
+})
+
+test('M3: compressing an all-empty round folds only the multi-call subs (issue #155 review)', async () => {
+  // The exact shape from the PR review: a LIVE user turn precedes a fully
+  // consumed multi-call round whose results are BOTH empty. PR #156's fallback
+  // anchored the end edge on that preceding user turn (inverted range → visible
+  // content folded into the block); the end edge must fall back onto the round's
+  // own last sub-id instead, so only the two sub-messages are consumed.
+  const env = makeEnv()
+  const session = Session.create('allempty')
+  appendTurn(session, 1)
+  appendUser(session, longText('q', 0))                      // seq 1 (must survive)
+  // Multi-call round whose RESULTS are empty — the span's volume comes from
+  // the call arguments (the kernel's 5000-char minimum), not from any result.
+  session.append('assistant/message', {
+    turn: 1,
+    step: 1,
+    stream: [],
+    message: createAssistantMessage({
+      content: [
+        { type: 'text', text: 'plan' },
+        { type: 'tool-call', id: 'a', name: 'bash', arguments: longText('cmd-a', 0) },
+        { type: 'tool-call', id: 'b', name: 'bash', arguments: longText('cmd-b', 1) },
+      ],
+      provider: 'test-provider',
+      model: 'test-model',
+    }),
+  }, { surfaceOp: 'append' })                                // seq 2
+  appendEmptyToolResult(session, 'a', 1, 1)                  // seq 3
+  appendEmptyToolResult(session, 'b', 1, 1)                  // seq 4
+  const result = await toolOf(env, 'compress').execute({
+    content: [{
+      startSeq: 2,
+      endSeq: 4,
+      summary: 'This summary is long enough to pass the kernel minimum length threshold of fifty characters for the compressible content range.',
+    }],
+  } as never, fakeExec(session))
+
+  assert.match((result as { text: string }).text, /Compressed 1 block/)
+  const ledger = rebuildBlockLedger(session.snapshotEvents())
+  assert.equal(ledger.length, 1)
+  assert.deepEqual(ledger[0]!.shadowedSeqs, [2, 3, 4])
+  // The kernel folded EXACTLY the two sub-messages — nothing before or after.
+  assert.deepEqual([...ledger[0]!.effectiveMessageIds!], ['2#a', '2#b'])
+  const nodes = session.surface.nodes
+  assert.ok(nodes.includes(1), 'the preceding live user turn survives on the surface')
+  for (const gone of [2, 3, 4]) {
+    assert.ok(!nodes.includes(gone), `seq ${gone} is shadowed off the surface`)
+  }
 })
 
 test('M3: compress shadows multi-tool-call messages inside a clean range', async () => {
