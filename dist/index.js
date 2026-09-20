@@ -5022,7 +5022,7 @@ function windowSourceLabel(window) {
   if (window.source === "auto") {
     return `auto-detected from ${window.provider ?? "?"}/${window.model ?? "?"}`;
   }
-  if (window.probeFailed === true) return "default (auto-detection failed \u2014 see /acp config)";
+  if (window.probeFailed === true) return "default (auto-detection failed \u2014 see /acp-prune config)";
   return "default (auto-detection unavailable)";
 }
 function projectedContextWindow(agent) {
@@ -5879,7 +5879,7 @@ async function statusText(env, agent) {
     );
   }
   if (window.probeFailed === true) {
-    lines.push(`  \u26A0 window auto-detection failed \u2014 using the ${limit} fallback (change modelContextLimit or autoModelContextLimit via /acp config \u2014 or restart \u2014 to re-probe)`);
+    lines.push(`  \u26A0 window auto-detection failed \u2014 using the ${limit} fallback (change modelContextLimit or autoModelContextLimit via /acp-prune config \u2014 or restart \u2014 to re-probe)`);
   }
   const state = structuredClone(env.store.stateFor(session));
   const config = kernelConfigFor({ ...env, modelContextLimit: limit });
@@ -5902,18 +5902,18 @@ async function statusText(env, agent) {
 }
 function compressText(env, agent, args) {
   if (args.length < 3) {
-    return "/acp compress <startSeq> <endSeq> <summary...>";
+    return "/acp-prune compress <startSeq> <endSeq> <summary...>";
   }
   const startSeq = Number(args[0]);
   const endSeq = Number(args[1]);
   const summary = args.slice(2).join(" ");
   if (!Number.isInteger(startSeq) || !Number.isInteger(endSeq)) {
-    return "/acp compress: startSeq and endSeq must be integers";
+    return "/acp-prune compress: startSeq and endSeq must be integers";
   }
   const session = agent.session;
   const { start, end } = resolveSurfaceRange(session, startSeq, endSeq);
   if (blockRefForSummarySeq(session, start) !== null || blockRefForSummarySeq(session, end) !== null) {
-    return "/acp compress: the range touches a compressed block summary node \u2014 distill it with the compress tool (seq-based batch), not /acp compress";
+    return "/acp-prune compress: the range touches a compressed block summary node \u2014 distill it with the compress tool (seq-based batch), not /acp-prune compress";
   }
   const shadowed = shadowedSeqsOf(session, start, end);
   const instructionHits = guardedRowsInSpan(guardedSurfaceSeqsOf(session), shadowed);
@@ -5933,7 +5933,7 @@ function compressText(env, agent, args) {
   });
   return `Compressed seqs ${start}..${end} (${shadowed.length} messages) as block ${compactionId.slice(0, 8)}`;
 }
-var DECOMPRESS_USAGE = "/acp decompress <blockId> [offset] [limit]";
+var DECOMPRESS_USAGE = "/acp-prune decompress <blockId> [offset] [limit]";
 function decompressText(_env, agent, args) {
   if (args.length < 1) return DECOMPRESS_USAGE;
   const offset = args[1] === void 0 ? 0 : Number(args[1]);
@@ -5944,7 +5944,7 @@ function decompressText(_env, agent, args) {
   const blockId = blockIdOfKernelRef(session, args[0]);
   const ledger = rebuildBlockLedger(sessionEventsOf(session));
   const block = blockId === null ? ledger.find((entry) => entry.blockId.startsWith(args[0])) : ledger.find((entry) => entry.blockId === blockId);
-  if (block === void 0) return `block "${args[0]}" not found (see /acp status)`;
+  if (block === void 0) return `block "${args[0]}" not found (see /acp-prune status)`;
   const expanded = expandShadowedSeqs(session, block.blockId);
   const page = sliceDecompressPage(
     expanded,
@@ -5964,14 +5964,14 @@ function decompressText(_env, agent, args) {
     `Block ${block.blockId} \u2014 ${block.summary}`,
     `[messages ${page.offset + 1}..${page.offset + page.seqs.length} of ${page.total}]`
   ];
-  if (!page.exhausted) lines.push(`Continue with: /acp decompress ${block.blockId.slice(0, 8)} ${page.offset + page.seqs.length}`);
+  if (!page.exhausted) lines.push(`Continue with: /acp-prune decompress ${block.blockId.slice(0, 8)} ${page.offset + page.seqs.length}`);
   lines.push("", parts.join("\n\n") || "(no recoverable content)");
   return lines.join("\n");
 }
 function acpCommand(env) {
   return {
-    name: "acp",
-    description: "Active Context Pruning \u2014 model-driven context compression. Usage: /acp status | /acp compress <startSeq> <endSeq> <summary> | /acp decompress <blockId> [offset] [limit] | /acp config [list|set <key> <value>|reset <key>|all]",
+    name: "acp-prune",
+    description: "Active Context Pruning \u2014 model-driven context compression. Usage: /acp-prune status | /acp-prune compress <startSeq> <endSeq> <summary> | /acp-prune decompress <blockId> [offset] [limit] | /acp-prune config [list|set <key> <value>|reset <key>|all]",
     handler: async (invocation) => {
       const raw = invocation.rawInput.trim();
       if (raw === "" || raw === "status") {
@@ -5986,7 +5986,7 @@ function acpCommand(env) {
       if (raw.startsWith("decompress")) {
         return { kind: "success", text: decompressText(env, invocation.agent, raw.slice("decompress".length).trim().split(/\s+/)) };
       }
-      return { kind: "error", text: `unknown /acp subcommand "${raw.split(/\s+/)[0]}" \u2014 use status | compress | decompress | config` };
+      return { kind: "error", text: `unknown /acp-prune subcommand "${raw.split(/\s+/)[0]}" \u2014 use status | compress | decompress | config` };
     }
   };
 }
@@ -5998,7 +5998,7 @@ function isSettingsKey(key) {
 }
 function settingsWriteFailure(error) {
   if (error instanceof SettingsConflictError) {
-    return "conflict: another writer changed this setting at the same time \u2014 run /acp config again";
+    return "conflict: another writer changed this setting at the same time \u2014 run /acp-prune config again";
   }
   return `rejected: ${String(error)}`;
 }
@@ -6026,7 +6026,7 @@ function configListText(surface) {
   }
   lines.push("", "  changes apply to running sessions immediately (no restart)");
   lines.push("  coreOverrides (composition layer) merge LAST and beat these values on same-name keys");
-  lines.push("  /acp config reset <key> returns the key to the composition row / engine default");
+  lines.push("  /acp-prune config reset <key> returns the key to the composition row / engine default");
   return lines.join("\n");
 }
 async function configSetText(surface, key, rawValue) {
@@ -6088,13 +6088,13 @@ async function configText(env, rest) {
   const verb = args[0] ?? "list";
   if (verb === "list") return configListText(surface);
   if (verb === "set") {
-    if (args.length < 3) return "usage: /acp config set <key> <value> (e.g. /acp config set nudgeMaxContextLimitPct 0.72)";
+    if (args.length < 3) return "usage: /acp-prune config set <key> <value> (e.g. /acp-prune config set nudgeMaxContextLimitPct 0.72)";
     return configSetText(surface, args[1], args.slice(2).join(" "));
   }
   if (verb === "reset") {
     return configResetText(surface, args[1] ?? "all");
   }
-  return `unknown /acp config verb "${verb}" \u2014 use list | set <key> <value> | reset <key>|all`;
+  return `unknown /acp-prune config verb "${verb}" \u2014 use list | set <key> <value> | reset <key>|all`;
 }
 
 // src/system-prompt.ts
@@ -6171,9 +6171,9 @@ var AcpCompactionEngine = class extends CompactionEngine {
   windowCache = /* @__PURE__ */ new Map();
   /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (SettingsProvider.installSection). */
   readSettingsSource = () => resolveAcpSettings({});
-  /** The settings service, captured lazily for /acp config (undefined in provider-less processes). */
+  /** The settings service, captured lazily for /acp-prune config (undefined in provider-less processes). */
   settingsService;
-  /** /acp config read/write surface. */
+  /** /acp-prune config read/write surface. */
   settingsCommand;
   /** Per route the adapter's per-request output cap (the output reservation); null = undisclosed. */
   outputReservationCache = /* @__PURE__ */ new Map();
@@ -6223,7 +6223,7 @@ var AcpCompactionEngine = class extends CompactionEngine {
       kernel: this.kernel,
       store: this.store,
       // The settings-exposed knobs read LIVE from the settings source, so a
-      // settings.yaml edit (or /acp config set) hot-applies to every
+      // settings.yaml edit (or /acp-prune config set) hot-applies to every
       // subsequent call — consumers never see stale numbers. (ToolEnvironment
       // fields are readonly properties; getters satisfy them.)
       get modelContextLimit() {
@@ -6240,7 +6240,7 @@ var AcpCompactionEngine = class extends CompactionEngine {
       },
       coreOverrides: this.config.coreOverrides,
       // Display-only: which named preset produced the thresholds above (if any),
-      // so /acp status can name it. The resolved pct values above are what the
+      // so /acp-prune status can name it. The resolved pct values above are what the
       // kernel actually reads — this field never feeds kernelConfigFor.
       preset: this.config.preset,
       windowFor: (agent) => this.windowFor(agent),
@@ -6381,7 +6381,7 @@ var AcpCompactionEngine = class extends CompactionEngine {
       cap = probe.outputReservation;
       if (probe.contextWindow === null) {
         this.ctx.logger.warn(
-          `billion-context-dsh: context-window auto-detection failed for ${provider}/${model} \u2014 using the ${DEFAULT_CONTEXT_WINDOW} fallback (change modelContextLimit or autoModelContextLimit via /acp config \u2014 or restart \u2014 to re-probe)`
+          `billion-context-dsh: context-window auto-detection failed for ${provider}/${model} \u2014 using the ${DEFAULT_CONTEXT_WINDOW} fallback (change modelContextLimit or autoModelContextLimit via /acp-prune config \u2014 or restart \u2014 to re-probe)`
         );
         window = { limit: DEFAULT_CONTEXT_WINDOW, source: "default", provider, model, probeFailed: true };
         cap = null;

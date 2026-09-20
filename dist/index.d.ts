@@ -21,7 +21,7 @@
  * ```
  *
  * The package registers `ctx.compaction` plus the four model tools and the
- * `/acp` command when the hosting composition provides `ctx.tools` /
+ * `/acp-prune` command when the hosting composition provides `ctx.tools` /
  * `ctx.commands`.
  * @module billion-context-dsh
  */
@@ -111,7 +111,7 @@ export interface AcpConfig {
     readonly countTokens?: (text: string) => number;
     /** Register the four model tools on `ctx.tools`. Default true. */
     readonly autoTools: boolean;
-    /** Register the `/acp` command on `ctx.commands`. Default true. */
+    /** Register the `/acp-prune` command on `ctx.commands`. Default true. */
     readonly autoCommand: boolean;
     /** Inject the nudge into `agent/pre-step` when the kernel recommends it. Default true. */
     readonly autoNudge: boolean;
@@ -157,9 +157,9 @@ export declare class AcpCompactionEngine extends CompactionEngine {
     private readonly windowCache;
     /** Live settings snapshot thunk (composition → user settings layer); swapped when the settings provider attaches (SettingsProvider.installSection). */
     private readSettingsSource;
-    /** The settings service, captured lazily for /acp config (undefined in provider-less processes). */
+    /** The settings service, captured lazily for /acp-prune config (undefined in provider-less processes). */
     private settingsService;
-    /** /acp config read/write surface. */
+    /** /acp-prune config read/write surface. */
     readonly settingsCommand: SettingsCommandSurface;
     /** Per route the adapter's per-request output cap (the output reservation); null = undisclosed. */
     private readonly outputReservationCache;
