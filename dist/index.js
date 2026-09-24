@@ -6176,6 +6176,17 @@ function resolvePresetThresholds(base, config) {
     nudgeEmergencyThresholdPct: config.nudgeEmergencyThresholdPct ?? preset.nudgeEmergencyThresholdPct
   };
 }
+function presetFilledSettingsEntry(config) {
+  const entry = filterSettingsEntry(config);
+  if (config.preset === void 0) return entry;
+  const preset = resolvePreset(config.preset);
+  return {
+    ...entry,
+    nudgeMinContextLimitPct: config.nudgeMinContextLimitPct ?? preset.nudgeMinContextLimitPct,
+    nudgeMaxContextLimitPct: config.nudgeMaxContextLimitPct ?? preset.nudgeMaxContextLimitPct,
+    nudgeEmergencyThresholdPct: config.nudgeEmergencyThresholdPct ?? preset.nudgeEmergencyThresholdPct
+  };
+}
 function assertNudgeThresholdOrder(config) {
   const { nudgeMinContextLimitPct: min, nudgeMaxContextLimitPct: max, nudgeEmergencyThresholdPct: emergency } = config;
   const describe = `min ${min ?? "kernel default"} / max ${max ?? "kernel default"} / emergency ${emergency ?? "kernel default"}`;
@@ -6229,7 +6240,7 @@ var AcpCompactionEngine = class extends CompactionEngine {
     this.kernel = createCore(ports);
     setDocCacheCap(128 * 1024 * 1024);
     this.store = new AcpStateStore();
-    const compositionEntry = filterSettingsEntry(config);
+    const compositionEntry = presetFilledSettingsEntry(config);
     let current = resolveAcpSettings(compositionEntry);
     this.readSettingsSource = () => current;
     const engine = this;
