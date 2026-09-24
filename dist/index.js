@@ -3606,7 +3606,12 @@ function contentBlocksOfEvent(event) {
 function isCheckpointNode(event) {
   if (event.type !== "user/message") return false;
   const source = event.data.source;
-  return source?.plugin === "compact";
+  return source?.plugin === "compact" || source?.kind === "compact-checkpoint";
+}
+function checkpointCompactionIdOf(event) {
+  if (!isCheckpointNode(event)) return null;
+  const source = event.data.source;
+  return typeof source?.compactionId === "string" ? source.compactionId : null;
 }
 var METADATA_PLUGINS = /* @__PURE__ */ new Set([
   "acp-nudge",
@@ -4069,9 +4074,8 @@ function summarySeqIndex(events) {
   const index = /* @__PURE__ */ new Map();
   for (const event of events) {
     if (event.type !== "user/message") continue;
-    const source = event.data.source;
-    const compactionId = source?.plugin === "compact" ? source.compactionId : void 0;
-    if (compactionId !== void 0 && !index.has(compactionId)) index.set(compactionId, event.seq);
+    const compactionId = checkpointCompactionIdOf(event);
+    if (compactionId !== null && !index.has(compactionId)) index.set(compactionId, event.seq);
   }
   return index;
 }
@@ -4472,10 +4476,10 @@ function blockRegistry(session) {
 }
 function blockRefForSummarySeq(session, seq) {
   const event = eventAtOf(session, seq);
-  if (event?.type !== "user/message") return null;
-  const source = event.data.source;
-  if (source?.plugin !== "compact" || source.compactionId === void 0) return null;
-  const entry = blockRegistry(session).find((r) => r.blockId === source.compactionId);
+  if (event === void 0) return null;
+  const compactionId = checkpointCompactionIdOf(event);
+  if (compactionId === null) return null;
+  const entry = blockRegistry(session).find((r) => r.blockId === compactionId);
   if (entry === void 0) return null;
   return entry.kernelBlockId;
 }
@@ -4495,10 +4499,8 @@ function summarySeqOfKernelBlock(session, kernelBlockId) {
 }
 function checkpointBlockIdOf(events, seq) {
   const event = events[seq];
-  if (event?.type !== "user/message") return null;
-  const source = event.data.source;
-  if (source?.plugin !== "compact" || source.compactionId === void 0) return null;
-  return source.compactionId;
+  if (event === void 0) return null;
+  return checkpointCompactionIdOf(event);
 }
 function expandShadowedSeqs(session, blockId) {
   const ledger = rebuildBlockLedger(sessionEventsOf(session));
