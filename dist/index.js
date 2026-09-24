@@ -3619,11 +3619,26 @@ var REAL_CONTENT_PLUGINS = /* @__PURE__ */ new Set([
   "user-approval",
   "tools-ptc"
 ]);
+var REAL_CONTENT_KINDS = /* @__PURE__ */ new Set([
+  "runtime-context",
+  // dynamic-context snapshot (was '@deepseek-ai/dsh-system-prompt')
+  "ptc-mode"
+  // deferred tool context (was 'tools-ptc' / 'tools-code-mode')
+]);
+var AUDITED_RELAY_KINDS = /* @__PURE__ */ new Set([
+  "subagent-report",
+  "subagent-settled"
+]);
 var HOST_INSTRUCTION_KINDS = /* @__PURE__ */ new Set([
   "agent-instructions",
   // AGENTS.md injection (hook shape: {kind:'agent-instructions', form:'instructions'})
-  "skill-catalog"
+  "skill-catalog",
   // skill catalog (form:'catalog')
+  // Host compaction summary row (DSH >= 0.1.7; was plugin 'dsh-compaction-basic').
+  // That legacy name was never whitelisted, so its rows were barriers already —
+  // the renamed spelling keeps exactly that treatment instead of silently
+  // becoming foldable content (issue #169).
+  "compact-basic"
 ]);
 function sourcePluginOf(source) {
   if (source === void 0 || typeof source !== "object") return void 0;
@@ -3656,8 +3671,10 @@ function classifySurfaceEvent(event) {
     if (plugin !== void 0 && REAL_CONTENT_PLUGINS.has(plugin)) return "real";
     return "instruction";
   }
-  if (kind !== void 0 && HOST_INSTRUCTION_KINDS.has(kind)) return "instruction";
-  return "real";
+  if (typeof kind !== "string") return "real";
+  if (HOST_INSTRUCTION_KINDS.has(kind)) return "instruction";
+  if (REAL_CONTENT_KINDS.has(kind) || AUDITED_RELAY_KINDS.has(kind)) return "real";
+  return "instruction";
 }
 function isRealUserTurn(event) {
   if (event.type !== "user/message") return false;
@@ -3665,7 +3682,9 @@ function isRealUserTurn(event) {
   const source = event.data.source;
   const plugin = sourcePluginOf(source);
   if (plugin !== void 0 && REAL_CONTENT_PLUGINS.has(plugin)) return false;
-  return source?.kind !== "subagent-report" && source?.kind !== "subagent-settled";
+  const kind = source?.kind;
+  if (typeof kind === "string" && REAL_CONTENT_KINDS.has(kind)) return false;
+  return kind !== "subagent-report" && kind !== "subagent-settled";
 }
 
 // src/host-tokens.ts
