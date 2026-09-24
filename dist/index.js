@@ -3625,11 +3625,23 @@ var HOST_INSTRUCTION_KINDS = /* @__PURE__ */ new Set([
   "skill-catalog"
   // skill catalog (form:'catalog')
 ]);
+function sourcePluginOf(source) {
+  if (source === void 0 || typeof source !== "object") return void 0;
+  const kind = source.kind;
+  if (kind === "plugin") {
+    return typeof source.plugin === "string" && source.plugin.length > 0 ? source.plugin : void 0;
+  }
+  if (typeof kind === "string" && kind.startsWith("plugin:")) {
+    const name = kind.slice("plugin:".length);
+    return name.length > 0 ? name : void 0;
+  }
+  return void 0;
+}
 function isAgentInstructionsRow(event) {
   if (event.type !== "user/message") return false;
   const source = event.data.source;
   if (!source) return false;
-  return source.kind === "agent-instructions" || source.kind === "plugin" && source.plugin === "agent-instructions";
+  return source.kind === "agent-instructions" || sourcePluginOf(source) === "agent-instructions";
 }
 function classifySurfaceEvent(event) {
   if (isCheckpointNode(event)) return "checkpoint";
@@ -3638,9 +3650,10 @@ function classifySurfaceEvent(event) {
   if (!source) return "real";
   const kind = source.kind;
   if (kind === "user") return "real";
-  if (kind === "plugin") {
-    if (source.plugin !== void 0 && METADATA_PLUGINS.has(source.plugin)) return "metadata";
-    if (source.plugin !== void 0 && REAL_CONTENT_PLUGINS.has(source.plugin)) return "real";
+  const plugin = sourcePluginOf(source);
+  if (kind === "plugin" || plugin !== void 0) {
+    if (plugin !== void 0 && METADATA_PLUGINS.has(plugin)) return "metadata";
+    if (plugin !== void 0 && REAL_CONTENT_PLUGINS.has(plugin)) return "real";
     return "instruction";
   }
   if (kind !== void 0 && HOST_INSTRUCTION_KINDS.has(kind)) return "instruction";
@@ -3650,7 +3663,8 @@ function isRealUserTurn(event) {
   if (event.type !== "user/message") return false;
   if (classifySurfaceEvent(event) !== "real") return false;
   const source = event.data.source;
-  if (source?.plugin !== void 0 && REAL_CONTENT_PLUGINS.has(source.plugin)) return false;
+  const plugin = sourcePluginOf(source);
+  if (plugin !== void 0 && REAL_CONTENT_PLUGINS.has(plugin)) return false;
   return source?.kind !== "subagent-report" && source?.kind !== "subagent-settled";
 }
 
@@ -4128,7 +4142,10 @@ function hideSurfaceSeqs(session, seqs, text, priceEvent = hostPriceEvent) {
   const body = text !== void 0 && text.trim().length > 0 ? text : PRUNE_NOTE;
   session.append("user/message", createUserMessage({
     content: [{ type: "text", text: body }],
-    source: { kind: "plugin", plugin: "billion-context-dsh" }
+    // V4 producer kind (issue #163): DSH ≥0.1.7's V4 admission rejects the
+    // legacy wrapper `{ kind: 'plugin', plugin: … }`; `plugin:<name>` is what
+    // the host's own V3→V4 migration emits and is accepted by 0.1.5 too.
+    source: { kind: "plugin:billion-context-dsh" }
   }), {
     surfaceOp: { op: "replace", startSeq: start, endSeq: end },
     sourceEventSeqs: [...seqs]
@@ -4902,7 +4919,13 @@ function buildNudge(agent, env, lastNudgeTurn, emergencyNudges, onEmergencyCapHi
   );
   const message = createUserMessage2({
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "acp-nudge" }
+    // V4 producer kind (issue #163): DSH ≥0.1.7's V4 admission rejects the
+    // legacy wrapper shape `{ kind: 'plugin', plugin: … }` outright (a wedged
+    // batch fails the NEXT turn with "format v4 message requires a
+    // producer-owned source kind"). `plugin:<name>` is exactly what the host's
+    // own V3→V4 migration emits for unregistered plugins, and DSH 0.1.5
+    // sessions accept it too (probe-verified), so no version gate is needed.
+    source: { kind: "plugin:acp-nudge" }
   });
   return { message, emergency };
 }

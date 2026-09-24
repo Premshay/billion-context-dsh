@@ -12,6 +12,16 @@
  */
 import type { CoreMessage } from 'acp-kernel';
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+declare module '@deepseek-ai/dsh-llm/message' {
+    interface MessageSourceMap {
+        acpNudge: {
+            kind: 'plugin:acp-nudge';
+        };
+        acpPrune: {
+            kind: 'plugin:billion-context-dsh';
+        };
+    }
+}
 /**
  * Extract plain text from a DSH content block array or string.
  *
@@ -160,11 +170,28 @@ export type SurfaceEventClass = 'real' | 'metadata' | 'checkpoint' | 'instructio
 /** Plugin names the engine itself authors — safe to fold into real segments. */
 export declare const METADATA_PLUGINS: ReadonlySet<string>;
 /**
- * True for AGENTS.md instruction rows in BOTH host shapes: the hook shape
- * (`kind:'agent-instructions'`, form 'instructions') and the baseline shape
- * (`kind:'plugin'` + plugin 'agent-instructions'). Shared by the newest-row
- * scan and the range scanner so protection and folding always agree on what
- * counts as an AGENTS.md row.
+ * Resolve the owning plugin name from either durable source shape: the legacy
+ * V3 wrapper `{ kind: 'plugin', plugin: '<name>' }` or the V4 producer kind
+ * `'plugin:<name>'`. DSH 0.1.7's V3→V4 migration rewrites every unregistered
+ * plugin row into the latter on file open, so both shapes coexist on a live
+ * surface until a session has been fully rewritten (issue #163). Returns
+ * undefined when neither shape is present, or when the name is missing,
+ * non-string, or empty — callers then keep their conservative fallback.
+ */
+export declare function sourcePluginOf(source: {
+    kind?: unknown;
+    plugin?: unknown;
+} | undefined): string | undefined;
+/**
+ * True for AGENTS.md instruction rows in ALL host shapes: the hook shape
+ * (`kind:'agent-instructions'`, form 'instructions'), the legacy V3 wrapper
+ * (`kind:'plugin'` + plugin 'agent-instructions'), and the V4 producer kind
+ * (`kind:'plugin:agent-instructions'`) that DSH 0.1.7's migration rewrites
+ * legacy rows into on file open (issue #163) — a migrated session must keep
+ * its newest-row pin, or the current copy becomes foldable and the
+ * compress → re-inject loop returns. Shared by the newest-row scan and the
+ * range scanner so protection and folding always agree on what counts as an
+ * AGENTS.md row.
  */
 export declare function isAgentInstructionsRow(event: SessionEvent): boolean;
 export declare function classifySurfaceEvent(event: SessionEvent): SurfaceEventClass;
