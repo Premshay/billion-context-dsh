@@ -6246,6 +6246,12 @@ var AcpCompactionEngine = class extends CompactionEngine {
     this.settingsCommand = makeSettingsCommandSurface(() => this.settingsService, () => current);
     if (this.config.settingsEnabled !== false) {
       ctx.inject(["settings"], (settingsCtx) => {
+        if (typeof settingsCtx.settings?.installSection !== "function") {
+          this.ctx.logger.warn(
+            "billion-context-dsh: host settings service has no installSection (removed in dsh-settings >= 0.1.7) \u2014 the compaction-acp settings section is not registered; the six knobs keep their composition values and /acp-prune config reports the section unavailable"
+          );
+          return void 0;
+        }
         settingsCtx.settings.installSection(ctx, ACP_SETTINGS_NAMESPACE, AcpSettingsSchema, compositionEntry, {
           // The seam's source type follows the entry it registered, so `source`
           // is a partial view of the settings; re-resolve it into a
