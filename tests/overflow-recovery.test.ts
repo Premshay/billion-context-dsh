@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Session } from '@deepseek-ai/dsh-session'
-import AcpCompactionEngine, { AcpCompactionEngine as Named } from '../src/index.ts'
+import AcpCompactionEngine, { AcpCompactionEngine as Named, resolveAcpConfig } from '../src/index.ts'
 import { rebuildBlockLedger } from '../src/region.ts'
-import { SUMMARY_FRAME_PREFIX } from '../src/messages.ts'
+import { SUMMARY_FRAME_PREFIX, eventsToCoreMessages, surfaceEventsOf } from '../src/messages.ts'
 import { sessionEventsOf } from '../src/session-events.ts'
 import { buildTextSession, appendUser, appendAssistant, longText } from './helpers.ts'
 
@@ -86,6 +86,23 @@ test('M5: context overflow emergency-compacts the largest eligible block and ret
   assert.match(block.summary, /context-overflow emergency compaction/, 'the marker summary names its origin')
   assert.ok(!block.summary.includes(SUMMARY_FRAME_PREFIX), 'engine-written marker is NOT stamped as a model-written summary')
   assert.ok(block.shadowedSeqs.length > 0, 'the block shadowed a non-empty range')
+  // What the MODEL sees must be the same bytes: the projection net frames every
+  // checkpoint node, so the marker has to be recognized as engine-written on
+  // that path too — otherwise the frame would mislabel it as model-written and
+  // the decompress header (durable text) would differ from the live context.
+  const projected = eventsToCoreMessages(surfaceEventsOf(session))
+  assert.ok(
+    projected.some((message) => /context-overflow emergency compaction/.test(message.text)),
+    'the marker is visible on the surface',
+  )
+  assert.ok(
+    projected.every((message) => !message.text.includes(SUMMARY_FRAME_PREFIX)),
+    'the engine marker is never mislabeled as a model-written summary in the model-visible projection',
+  )
+  assert.ok(
+    projected.some((message) => message.text === block.summary),
+    'projected text and durable text are the same bytes (no stored/projected split)',
+  )
   void engine
 })
 
@@ -169,6 +186,45 @@ test('M5: maxOverflowRetries 0 disables the automatic recovery', async () => {
 test('M5: invalid maxOverflowRetries fails engine construction loudly', () => {
   assert.throws(() => new Named(new Context(), { maxOverflowRetries: -1 }), /maxOverflowRetries must be a non-negative integer/)
   assert.throws(() => new Named(new Context(), { maxOverflowRetries: 1.5 }), /maxOverflowRetries must be a non-negative integer/)
+})
+
+test('M5: an explicitly undefined maxOverflowRetries keeps the host-parity default of 1', async () => {
+  // The key survives `{ ...DEFAULT_CONFIG, ...config }` as `undefined`, which a
+  // `?? 0` read would silently turn into "recovery disabled" while the config
+  // reports the default. The resolver must write the validated value back.
+  assert.equal(resolveAcpConfig({ maxOverflowRetries: undefined }).maxOverflowRetries, 1)
+  const ctx = new Context()
+  const engine = new Named(ctx, { modelContextLimit: 100000, maxOverflowRetries: undefined })
+  const session = buildTextSession(30)
+  assert.deepEqual(await requestError(ctx, fakeAgent(session, ctx), OVERFLOW), { kind: 'retry' }, 'default budget still recovers')
+  assert.equal(compactionSummaryCount(session), 1)
+  void engine
+})
+
+test('M5: overflow bookkeeping maps release their entries on both terminal paths', async () => {
+  const readInternals = (engine: Named): { overflowRetries: Map<unknown, number>; overflowSessions: Map<unknown, unknown> } =>
+    engine as unknown as { overflowRetries: Map<unknown, number>; overflowSessions: Map<unknown, unknown> }
+  // Progress (assistant message) is one terminal path.
+  const progressCtx = new Context()
+  const progressEngine = new Named(progressCtx, { modelContextLimit: 100000 })
+  const progressSession = buildTextSession(30)
+  const progressAgent = fakeAgent(progressSession, progressCtx)
+  assert.deepEqual(await requestError(progressCtx, progressAgent, OVERFLOW), { kind: 'retry' })
+  const progressInternals = readInternals(progressEngine)
+  assert.equal(progressInternals.overflowSessions.get(progressSession), progressAgent, 'reverse lookup is live while recovery is pending')
+  progressCtx.emit('session/event', progressSession, { type: 'assistant/message' })
+  assert.equal(progressInternals.overflowSessions.size, 0, 'progress releases the session→agent lookup')
+  assert.equal(progressInternals.overflowRetries.size, 0, 'progress releases the retry budget')
+  // Idle (unrelieved overflow, error surfaced) is the other one.
+  const idleCtx = new Context()
+  const idleEngine = new Named(idleCtx, { modelContextLimit: 100000 })
+  const idleSession = buildTextSession(30)
+  const idleAgent = fakeAgent(idleSession, idleCtx)
+  assert.deepEqual(await requestError(idleCtx, idleAgent, OVERFLOW), { kind: 'retry' })
+  idleCtx.emit('agent/status', { agent: idleAgent, status: 'idle' })
+  const idleInternals = readInternals(idleEngine)
+  assert.equal(idleInternals.overflowSessions.size, 0, 'idle releases the session→agent lookup')
+  assert.equal(idleInternals.overflowRetries.size, 0, 'idle releases the retry budget')
 })
 
 test('M5: AcpCompactionEngine default export carries the overflow listener too', async () => {

@@ -56,7 +56,7 @@ import {
   stripOrphanedSurfaceToolMessages,
   type KernelRangeView,
 } from './region.ts'
-import { allLogMessages, eventsToCoreMessages, surfaceEventsOf } from './messages.ts'
+import { allLogMessages, eventsToCoreMessages, overflowMarkerSummary, surfaceEventsOf } from './messages.ts'
 import { shadowedTokensViaMeter } from './host-tokens.ts'
 import { kernelConfigFor } from './config.ts'
 import {
@@ -258,7 +258,11 @@ export function resolveAcpConfig(config: Partial<AcpConfig> = {}): AcpConfig {
   if (!Number.isInteger(maxOverflowRetries) || maxOverflowRetries < 0) {
     throw new Error(`maxOverflowRetries must be a non-negative integer (got ${maxOverflowRetries})`)
   }
-  return resolved
+  // Write the validated value BACK: an explicit `maxOverflowRetries: undefined`
+  // in a Partial config survives the `{ ...DEFAULT_CONFIG, ...config }` spread
+  // as `undefined`, and the request-error listener must never read that as
+  // "budget 0" (recovery silently disabled while the config says default).
+  return { ...resolved, maxOverflowRetries }
 }
 
 /**
@@ -590,7 +594,14 @@ export class AcpCompactionEngine extends CompactionEngine {
       // so a FUTURE overflow gets a fresh recovery chance (host parity).
       if (event.type === 'assistant/message') {
         const overflowAgent = this.overflowSessions.get(session)
-        if (overflowAgent !== undefined) this.overflowRetries.delete(overflowAgent)
+        if (overflowAgent !== undefined) {
+          this.overflowRetries.delete(overflowAgent)
+          // Drop the reverse lookup as well: it exists ONLY to find the agent
+          // whose budget must be reset, and both terminal paths (progress, or
+          // idle after an unrelieved overflow) walk through here — keeping it
+          // would retain the session and its state for the engine's lifetime.
+          this.overflowSessions.delete(session)
+        }
       }
       if (event.type !== 'tool/result') return
       const message = event.data.message
@@ -653,13 +664,18 @@ export class AcpCompactionEngine extends CompactionEngine {
     // search_context/decompress) and asks the loop to retry. Without this
     // listener the error was rethrown unretried.
     ctx.on('agent/status', ({ agent, status }) => {
-      if (status === 'idle') this.overflowRetries.delete(agent)
+      if (status !== 'idle') return
+      this.overflowRetries.delete(agent)
+      this.overflowSessions.delete(agent.session)
     })
     ctx.on('agent/request-error', async ({ agent, failure, signal }, next) => {
       if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
       this.overflowSessions.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
-      const max = this.config.maxOverflowRetries ?? 0
+      // `resolveAcpConfig` normalizes the value, so this fallback only guards a
+      // future config shape; it MUST stay 1 (the host's own default) — reading 0
+      // here would disable overflow recovery for a key that was never set to 0.
+      const max = this.config.maxOverflowRetries ?? 1
       if (retries >= max) {
         this.ctx.logger.warn(
           `billion-context-dsh: context-overflow recovery budget spent (${max} retries) for session ${agent.session.id}; preserving the original request error`,
@@ -892,6 +908,10 @@ export class AcpCompactionEngine extends CompactionEngine {
       ranges: [{ startRef: byRaw[String(firstSeq)]!, endRef: byRaw[String(lastSeq)]! }],
       refs: { byRef: turn.state.messageRefs.byRef },
     }
+    // `preserveRecent: 5` is region.ts's own default (the nudge range table's
+    // recent-tail protection), pinned EXPLICITLY here: this path acts without
+    // asking the model, so its safety margin must not silently drift with a
+    // tuning change made for the advisory table.
     const ranges = buildCompressibleSeqRanges(session, view, {
       preserveRecent: 5,
       mediaPriceOf: meterMediaPriceResolver(agent, session),
@@ -903,7 +923,10 @@ export class AcpCompactionEngine extends CompactionEngine {
     const startRef = byRaw[String(best.start)]
     const endRef = byRaw[String(best.end)]
     if (startRef === undefined || endRef === undefined) return null
-    const summary = `[context-overflow emergency compaction: ${best.count} surface message(s) hidden because the provider rejected the request as exceeding the context window. The originals are intact in the session log — use search_context or decompress (see acp_status) to read them, or re-run the compress tool over this range to write a proper summary.]`
+    // Engine-written marker: the shared constructor in src/messages.ts is what
+    // makes the projection net exempt it from the model-written frame, so the
+    // model-visible text and the durable/decompress text stay identical.
+    const summary = overflowMarkerSummary(best.count)
     const applied = this.kernel.applyCompression({
       ranges: [{ startRef, endRef, summary, topic: 'context-overflow recovery' }],
       messages: coreMessages,
@@ -931,7 +954,6 @@ export class AcpCompactionEngine extends CompactionEngine {
       kernelBlockId: created.blockId,
       directMessageIds: created.directMessageIds,
       effectiveMessageIds: created.effectiveMessageIds,
-      framed: false,
     })
     return { start: best.start, end: best.end, shadowedSeqs: shadowed, shadowedTokenCount }
   }
